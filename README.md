@@ -22,6 +22,7 @@ display-analyzer
 Prints a tree of all GPUs and their connectors:
 
 ```
+$ display-analyzer
 GPU: Intel (Intel i915) [card1] (vendor=0x8086, device=0x7dd5)
 ├── card1-DP-1 [disconnected]
 ├── card1-DP-2 [disconnected]
@@ -34,6 +35,53 @@ GPU: Intel (Intel i915) [card1] (vendor=0x8086, device=0x7dd5)
     ├── Size: 29cm x 19cm (13.6")
     ├── EDID: v1.4, year 2023, week 52
     ├── Protocol: eDP
+    │   ├── AUX Channel: AUX A/DDI A/PHY A
+    │   └── DPCD: not readable (requires root for /dev/drm_dp_aux*)
+    ├── DPMS: On
+    └── Modes: 2880x1920, 2880x1920
+
+$ sudo display-analyzer
+GPU: Intel (Intel i915) [card1] (vendor=0x8086, device=0x7dd5)
+├── card1-DP-1 [disconnected]
+├── card1-DP-2 [disconnected]
+├── card1-DP-3 [disconnected]
+├── card1-DP-4 [disconnected]
+└── card1-eDP-1 [connected, enabled]
+    ├── Display: BOE NE135A1M-NY1
+    ├── Native: 2880x1920
+    ├── Color: 8-bit, digital
+    ├── Size: 29cm x 19cm (13.6")
+    ├── EDID: v1.4, year 2023, week 52
+    ├── Protocol: eDP
+    │   ├── AUX Channel: AUX A/DDI A/PHY A
+    │   ├── DP Version: 1.4
+    │   ├── Max Link Rate: 5.4 Gbps/lane (HBR2, 0x14)
+    │   ├── Max Lanes: 4
+    │   ├── Max Bandwidth: 21.6 Gbps total (17.3 Gbps effective)
+    │   ├── Capabilities: enhanced framing, TPS3, 0.5% downspread
+    │   ├── Active Link: 5.4 Gbps/lane (HBR2, 0x14) x 4 lanes
+    │   ├── Active Bandwidth: 21.6 Gbps total (17.3 Gbps effective)
+    │   ├── Sink Count: 1
+    │   ├── Lane 0: CR=ok EQ=FAIL Lock=FAIL
+    │   ├── Lane 1: CR=ok EQ=FAIL Lock=FAIL
+    │   ├── Lane 2: CR=ok EQ=FAIL Lock=FAIL
+    │   ├── Lane 3: CR=ok EQ=FAIL Lock=FAIL
+    │   ├── Interlane Align: FAIL
+    │   ├── PSR: PSR2 (Y-coordinate)
+    │   │   ├── State: PSR2 enabled
+    │   │   ├── Sink Status: active (RFB)
+    │   │   ├── Setup Time: 55 us
+    │   │   ├── SU Granularity: 0x4 pixels
+    │   │   ├── Features: Y-coordinate required, SU granularity required
+    │   │   └── Errors: none
+    │   └── PSR Driver Status:
+    │       Sink support: PSR = yes [0x03], Panel Replay = no, Panel Replay Selective Update = no
+    │       PSR mode: PSR2 enabled
+    │       Source PSR/PanelReplay ctl: enabled [0x80004a26]
+    │       Source PSR/PanelReplay status: DEEP_SLEEP [0x80000100]
+    │       Busy frontbuffer bits: 0x00000000
+    │       Performance counter: 0
+    │       PSR2 selective fetch: enabled
     ├── DPMS: On
     └── Modes: 2880x1920, 2880x1920
 ```
@@ -106,6 +154,20 @@ cargo build --release
 ```
 
 The binary is at `target/release/display-analyzer`.
+
+## DisplayPort link training
+
+DisplayPort connections go through a link training process where the transmitter (GPU) and receiver (display) negotiate signal parameters. The tool shows per-lane training status with three phases:
+
+1. **CR (Clock Recovery)** — The receiver locks onto the transmitter's clock signal. This is the first step; without it, nothing else works. Failures here usually indicate a bad cable or connector.
+
+2. **EQ (Channel Equalization)** — The signal quality is tuned so the receiver can reliably distinguish 0s from 1s at the target data rate. The transmitter adjusts voltage swing and pre-emphasis until the signal is clean. Failures often mean the cable is too long or low quality for the link rate.
+
+3. **Lock (Symbol Lock)** — The receiver locks onto symbol boundaries in the data stream, confirming the link can carry actual data.
+
+These phases happen in order — CR must pass before EQ is attempted, and EQ before symbol lock. **Interlane Align** is a final check that all lanes are synchronized so multi-lane data can be reassembled correctly.
+
+Transient failures (CR=ok, EQ=FAIL, Lock=FAIL) are normal during PSR (Panel Self Refresh) transitions — the link wakes up, clock recovers quickly, but equalization hasn't completed yet. These resolve within milliseconds.
 
 ## How it works
 

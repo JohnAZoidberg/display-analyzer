@@ -1,4 +1,4 @@
-use crate::dp_info;
+use crate::dp_info::{self, DpInfo};
 use crate::drm_info::ConnectorInfo;
 use crate::edid;
 use crate::gpu;
@@ -52,7 +52,9 @@ pub fn draw_display_info(ui: &mut egui::Ui, connectors: &[ConnectorInfo]) {
             egui::CollapsingHeader::new(&header)
                 .default_open(conn.status == "connected")
                 .show(ui, |ui| {
-                    draw_connector_details(ui, conn);
+                    let connector_path = std::path::Path::new("/sys/class/drm").join(&conn.name);
+                    let dp = dp_info::get_dp_info(&conn.connector_type, &connector_path);
+                    draw_connector_details(ui, conn, &dp);
                 });
         }
 
@@ -60,7 +62,7 @@ pub fn draw_display_info(ui: &mut egui::Ui, connectors: &[ConnectorInfo]) {
     }
 }
 
-fn draw_connector_details(ui: &mut egui::Ui, conn: &ConnectorInfo) {
+fn draw_connector_details(ui: &mut egui::Ui, conn: &ConnectorInfo, dp: &DpInfo) {
     // EDID info
     if let Some(raw) = &conn.edid_raw {
         if let Some(edid) = edid::parse_edid(raw) {
@@ -123,18 +125,127 @@ fn draw_connector_details(ui: &mut egui::Ui, conn: &ConnectorInfo) {
             ui.label(&conn.connector_type);
             ui.end_row();
 
-            // DP-specific info
-            let connector_path = std::path::Path::new("/sys/class/drm").join(&conn.name);
-            let dp = dp_info::get_dp_info(&conn.connector_type, &connector_path);
             if dp.is_dp {
-                if let Some(rate) = &dp.link_rate {
-                    ui.label("DP Link Rate:");
-                    ui.label(rate);
+                if let Some(aux_name) = &dp.aux_name {
+                    ui.label("AUX Channel:");
+                    ui.label(aux_name);
                     ui.end_row();
                 }
-                if let Some(lanes) = &dp.lane_count {
-                    ui.label("DP Lanes:");
-                    ui.label(lanes);
+
+                if let Some(dpcd) = &dp.dpcd {
+                    ui.label("DP Version:");
+                    ui.label(&dpcd.dp_version);
+                    ui.end_row();
+
+                    ui.label("Max Link Rate:");
+                    ui.label(dp_info::format_link_rate(
+                        dpcd.max_link_rate_raw,
+                        dpcd.max_link_rate_gbps,
+                    ));
+                    ui.end_row();
+
+                    ui.label("Max Lanes:");
+                    ui.label(dpcd.max_lane_count.to_string());
+                    ui.end_row();
+
+                    ui.label("Max Bandwidth:");
+                    ui.label(dp_info::format_bandwidth(
+                        dpcd.max_link_rate_gbps,
+                        dpcd.max_lane_count,
+                    ));
+                    ui.end_row();
+
+                    let mut caps = Vec::new();
+                    if dpcd.enhanced_framing {
+                        caps.push("enhanced framing");
+                    }
+                    if dpcd.tps3_supported {
+                        caps.push("TPS3");
+                    }
+                    if dpcd.downspread {
+                        caps.push("0.5% downspread");
+                    }
+                    if dpcd.mst_capable {
+                        caps.push("MST");
+                    }
+                    if !caps.is_empty() {
+                        ui.label("Capabilities:");
+                        ui.label(caps.join(", "));
+                        ui.end_row();
+                    }
+                }
+
+                if let Some(lc) = &dp.link_config {
+                    ui.label("Active Link:");
+                    ui.label(format!(
+                        "{} x {} lane{}",
+                        dp_info::format_link_rate(
+                            lc.current_link_rate_raw,
+                            lc.current_link_rate_gbps
+                        ),
+                        lc.current_lane_count,
+                        if lc.current_lane_count != 1 { "s" } else { "" }
+                    ));
+                    ui.end_row();
+
+                    ui.label("Active Bandwidth:");
+                    ui.label(dp_info::format_bandwidth(
+                        lc.current_link_rate_gbps,
+                        lc.current_lane_count,
+                    ));
+                    ui.end_row();
+                }
+
+                if let Some(ls) = &dp.link_status {
+                    if let Some(sc) = ls.sink_count {
+                        ui.label("Sink Count:");
+                        ui.label(format!(
+                            "{sc}{}",
+                            if ls.downstream_port_status_changed {
+                                " (changed)"
+                            } else {
+                                ""
+                            }
+                        ));
+                        ui.end_row();
+                    }
+
+                    let lane_count = dp
+                        .link_config
+                        .as_ref()
+                        .map(|lc| lc.current_lane_count)
+                        .or(dp.dpcd.as_ref().map(|d| d.max_lane_count))
+                        .unwrap_or(4) as usize;
+
+                    let all_ok = ls.lane_status[..lane_count]
+                        .iter()
+                        .all(|l| l.cr_done && l.channel_eq_done && l.symbol_locked);
+
+                    ui.label("Link Training:");
+                    if all_ok && ls.interlane_align_done {
+                        ui.label(format!("OK (all {lane_count} lanes locked, aligned)"));
+                    } else {
+                        ui.label("ISSUES (see details)");
+                    }
+                    ui.end_row();
+
+                    if !(all_ok && ls.interlane_align_done) {
+                        for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
+                            ui.label(format!("  Lane {i}:"));
+                            ui.label(format!(
+                                "CR={} EQ={} Lock={}",
+                                if lane.cr_done { "ok" } else { "FAIL" },
+                                if lane.channel_eq_done { "ok" } else { "FAIL" },
+                                if lane.symbol_locked { "ok" } else { "FAIL" },
+                            ));
+                            ui.end_row();
+                        }
+                    }
+                }
+
+                if dp.dpcd.is_none() {
+                    ui.label("DPCD:");
+                    ui.label("not readable (requires root for /dev/drm_dp_aux*)");
                     ui.end_row();
                 }
             }

@@ -1,4 +1,4 @@
-use crate::dp_info;
+use crate::dp_info::{self, DpInfo};
 use crate::drm_info::ConnectorInfo;
 use crate::edid;
 use crate::gpu;
@@ -53,7 +53,9 @@ pub fn print_all(connectors: &[ConnectorInfo]) {
             );
 
             if conn.status == "connected" {
-                print_connector_details(conn, child_prefix);
+                let connector_path = std::path::Path::new("/sys/class/drm").join(&conn.name);
+                let dp = dp_info::get_dp_info(&conn.connector_type, &connector_path);
+                print_connector_details(conn, &dp, child_prefix);
             }
         }
 
@@ -61,7 +63,7 @@ pub fn print_all(connectors: &[ConnectorInfo]) {
     }
 }
 
-fn print_connector_details(conn: &ConnectorInfo, prefix: &str) {
+fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
     // EDID info
     if let Some(raw) = &conn.edid_raw {
         if let Some(edid) = edid::parse_edid(raw) {
@@ -106,15 +108,106 @@ fn print_connector_details(conn: &ConnectorInfo, prefix: &str) {
     // Protocol
     println!("{prefix}├── Protocol: {}", conn.connector_type);
 
-    // DP-specific info
-    let connector_path = std::path::Path::new("/sys/class/drm").join(&conn.name);
-    let dp = dp_info::get_dp_info(&conn.connector_type, &connector_path);
+    // DP-specific info from DPCD, nested under protocol
     if dp.is_dp {
-        if let Some(rate) = &dp.link_rate {
-            println!("{prefix}├── DP Link Rate: {rate}");
+        let dp_prefix = format!("{prefix}│   ");
+
+        if let Some(aux_name) = &dp.aux_name {
+            println!("{dp_prefix}├── AUX Channel: {aux_name}");
         }
-        if let Some(lanes) = &dp.lane_count {
-            println!("{prefix}├── DP Lanes: {lanes}");
+
+        if let Some(dpcd) = &dp.dpcd {
+            println!("{dp_prefix}├── DP Version: {}", dpcd.dp_version);
+            println!(
+                "{dp_prefix}├── Max Link Rate: {}",
+                dp_info::format_link_rate(dpcd.max_link_rate_raw, dpcd.max_link_rate_gbps)
+            );
+            println!("{dp_prefix}├── Max Lanes: {}", dpcd.max_lane_count);
+            println!(
+                "{dp_prefix}├── Max Bandwidth: {}",
+                dp_info::format_bandwidth(dpcd.max_link_rate_gbps, dpcd.max_lane_count)
+            );
+
+            let mut caps = Vec::new();
+            if dpcd.enhanced_framing {
+                caps.push("enhanced framing");
+            }
+            if dpcd.tps3_supported {
+                caps.push("TPS3");
+            }
+            if dpcd.downspread {
+                caps.push("0.5% downspread");
+            }
+            if dpcd.mst_capable {
+                caps.push("MST");
+            }
+            if !caps.is_empty() {
+                println!("{dp_prefix}├── Capabilities: {}", caps.join(", "));
+            }
+        }
+
+        if let Some(lc) = &dp.link_config {
+            println!(
+                "{dp_prefix}├── Active Link: {} x {} lane{}",
+                dp_info::format_link_rate(lc.current_link_rate_raw, lc.current_link_rate_gbps),
+                lc.current_lane_count,
+                if lc.current_lane_count != 1 { "s" } else { "" }
+            );
+            println!(
+                "{dp_prefix}├── Active Bandwidth: {}",
+                dp_info::format_bandwidth(lc.current_link_rate_gbps, lc.current_lane_count)
+            );
+        }
+
+        if let Some(ls) = &dp.link_status {
+            if let Some(sc) = ls.sink_count {
+                println!(
+                    "{dp_prefix}├── Sink Count: {sc}{}",
+                    if ls.downstream_port_status_changed {
+                        " (changed)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+
+            let lane_count = dp
+                .link_config
+                .as_ref()
+                .map(|lc| lc.current_lane_count)
+                .or(dp.dpcd.as_ref().map(|d| d.max_lane_count))
+                .unwrap_or(4) as usize;
+
+            let all_ok = ls.lane_status[..lane_count]
+                .iter()
+                .all(|l| l.cr_done && l.channel_eq_done && l.symbol_locked);
+
+            if all_ok && ls.interlane_align_done {
+                println!(
+                    "{dp_prefix}└── Link Training: OK (all {lane_count} lanes locked, aligned)"
+                );
+            } else {
+                for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
+                    println!(
+                        "{dp_prefix}├── Lane {i}: CR={} EQ={} Lock={}",
+                        if lane.cr_done { "ok" } else { "FAIL" },
+                        if lane.channel_eq_done { "ok" } else { "FAIL" },
+                        if lane.symbol_locked { "ok" } else { "FAIL" },
+                    );
+                }
+                println!(
+                    "{dp_prefix}└── Interlane Align: {}",
+                    if ls.interlane_align_done {
+                        "ok"
+                    } else {
+                        "FAIL"
+                    }
+                );
+            }
+        }
+
+        if dp.dpcd.is_none() {
+            println!("{dp_prefix}└── DPCD: not readable (requires root for /dev/drm_dp_aux*)");
         }
     }
 

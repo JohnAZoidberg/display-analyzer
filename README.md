@@ -72,6 +72,19 @@ For DisplayPort/eDP connectors:
 ### With Nix (recommended)
 
 ```
+nix build
+./result/bin/display-analyzer
+```
+
+Or run directly:
+
+```
+nix run
+```
+
+For development, enter the dev shell:
+
+```
 nix develop
 cargo build --release
 ```

@@ -182,9 +182,12 @@ fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
                 .iter()
                 .all(|l| l.cr_done && l.channel_eq_done && l.symbol_locked);
 
+            let has_more = dp.psr.is_some() || dp.psr_driver_status.is_some();
+            let branch = if has_more { "├" } else { "└" };
+
             if all_ok && ls.interlane_align_done {
                 println!(
-                    "{dp_prefix}└── Link Training: OK (all {lane_count} lanes locked, aligned)"
+                    "{dp_prefix}{branch}── Link Training: OK (all {lane_count} lanes locked, aligned)"
                 );
             } else {
                 for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
@@ -196,7 +199,7 @@ fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
                     );
                 }
                 println!(
-                    "{dp_prefix}└── Interlane Align: {}",
+                    "{dp_prefix}{branch}── Interlane Align: {}",
                     if ls.interlane_align_done {
                         "ok"
                     } else {
@@ -206,7 +209,10 @@ fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
             }
         }
 
-        if dp.dpcd.is_none() {
+        // PSR info
+        print_psr_info(dp, &dp_prefix);
+
+        if dp.dpcd.is_none() && dp.psr.is_none() {
             println!("{dp_prefix}└── DPCD: not readable (requires root for /dev/drm_dp_aux*)");
         }
     }
@@ -220,5 +226,84 @@ fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
         println!("{prefix}└── Modes: {modes_str}");
     } else {
         println!("{prefix}└── Modes: (none)");
+    }
+}
+
+fn print_psr_info(dp: &DpInfo, dp_prefix: &str) {
+    let has_driver_status = dp.psr_driver_status.is_some();
+
+    if let Some(psr) = &dp.psr {
+        let last = !has_driver_status;
+        let branch = if last { "└" } else { "├" };
+        println!("{dp_prefix}{branch}── PSR: {}", psr.psr_version.as_str());
+
+        let psr_prefix = if last {
+            format!("{dp_prefix}    ")
+        } else {
+            format!("{dp_prefix}│   ")
+        };
+
+        // Active state
+        let state = if psr.psr2_enabled {
+            "PSR2 enabled"
+        } else if psr.psr_enabled {
+            "PSR1 enabled"
+        } else {
+            "disabled"
+        };
+        println!("{psr_prefix}├── State: {state}");
+
+        // Sink status
+        if let Some(status) = &psr.sink_status {
+            println!("{psr_prefix}├── Sink Status: {}", status.as_str());
+        }
+
+        // Setup time
+        println!(
+            "{psr_prefix}├── Setup Time: {} us{}",
+            psr.setup_time_us,
+            if psr.no_train_on_exit {
+                " (no link training on exit)"
+            } else {
+                ""
+            }
+        );
+
+        // PSR2 selective update granularity
+        if let Some(x) = psr.su_x_granularity {
+            if let Some(y) = psr.su_y_granularity {
+                println!("{psr_prefix}├── SU Granularity: {x}x{y} pixels");
+            }
+        }
+
+        // Features
+        let mut features = Vec::new();
+        if psr.y_coord_required {
+            features.push("Y-coordinate required");
+        }
+        if psr.su_granularity_required {
+            features.push("SU granularity required");
+        }
+        if psr.su_aux_frame_sync_not_needed {
+            features.push("AUX frame sync not needed");
+        }
+        if !features.is_empty() {
+            println!("{psr_prefix}├── Features: {}", features.join(", "));
+        }
+
+        // Errors
+        if psr.errors.is_empty() {
+            println!("{psr_prefix}└── Errors: none");
+        } else {
+            println!("{psr_prefix}└── Errors: {}", psr.errors.join(", "));
+        }
+    }
+
+    if let Some(driver_status) = &dp.psr_driver_status {
+        println!("{dp_prefix}└── PSR Driver Status:");
+        let inner_prefix = format!("{dp_prefix}    ");
+        for line in driver_status.lines() {
+            println!("{inner_prefix}{line}");
+        }
     }
 }

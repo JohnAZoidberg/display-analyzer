@@ -248,6 +248,62 @@ fn draw_connector_details(ui: &mut egui::Ui, conn: &ConnectorInfo, dp: &DpInfo) 
                     ui.label("not readable (requires root for /dev/drm_dp_aux*)");
                     ui.end_row();
                 }
+
+                // PSR info
+                if let Some(psr) = &dp.psr {
+                    ui.label("PSR:");
+                    ui.label(psr.psr_version.as_str());
+                    ui.end_row();
+
+                    ui.label("PSR State:");
+                    let state = if psr.psr2_enabled {
+                        "PSR2 enabled"
+                    } else if psr.psr_enabled {
+                        "PSR1 enabled"
+                    } else {
+                        "disabled"
+                    };
+                    ui.label(state);
+                    ui.end_row();
+
+                    if let Some(status) = &psr.sink_status {
+                        ui.label("PSR Sink Status:");
+                        ui.label(status.as_str());
+                        ui.end_row();
+                    }
+
+                    ui.label("PSR Setup Time:");
+                    ui.label(format!(
+                        "{} us{}",
+                        psr.setup_time_us,
+                        if psr.no_train_on_exit {
+                            " (no link training on exit)"
+                        } else {
+                            ""
+                        }
+                    ));
+                    ui.end_row();
+
+                    if let (Some(x), Some(y)) = (psr.su_x_granularity, psr.su_y_granularity) {
+                        ui.label("SU Granularity:");
+                        ui.label(format!("{x}x{y} pixels"));
+                        ui.end_row();
+                    }
+
+                    ui.label("PSR Errors:");
+                    if psr.errors.is_empty() {
+                        ui.label("none");
+                    } else {
+                        ui.label(psr.errors.join(", "));
+                    }
+                    ui.end_row();
+                }
+
+                if let Some(driver_status) = &dp.psr_driver_status {
+                    ui.label("PSR Driver:");
+                    ui.label(driver_status);
+                    ui.end_row();
+                }
             }
 
             ui.label("DPMS:");

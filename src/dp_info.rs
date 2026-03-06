@@ -8,6 +8,8 @@ pub struct DpInfo {
     pub dpcd: Option<DpcdInfo>,
     pub link_config: Option<LinkConfig>,
     pub link_status: Option<LinkStatus>,
+    pub psr: Option<PsrInfo>,
+    pub psr_driver_status: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -46,6 +48,68 @@ pub struct LaneStatus {
     pub cr_done: bool,
     pub channel_eq_done: bool,
     pub symbol_locked: bool,
+}
+
+pub struct PsrInfo {
+    pub psr_version: PsrVersion,
+    pub no_train_on_exit: bool,
+    pub setup_time_us: u16,
+    pub y_coord_required: bool,
+    pub su_granularity_required: bool,
+    pub su_aux_frame_sync_not_needed: bool,
+    pub su_x_granularity: Option<u8>,
+    pub su_y_granularity: Option<u8>,
+    pub psr_enabled: bool,
+    pub psr2_enabled: bool,
+    pub sink_status: Option<PsrSinkStatus>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PsrVersion {
+    None,
+    Psr1,
+    Psr2,
+    Psr2YCoord,
+    Psr2EarlyTransport,
+}
+
+impl PsrVersion {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PsrVersion::None => "Not supported",
+            PsrVersion::Psr1 => "PSR1",
+            PsrVersion::Psr2 => "PSR2",
+            PsrVersion::Psr2YCoord => "PSR2 (Y-coordinate)",
+            PsrVersion::Psr2EarlyTransport => "PSR2 (Early Transport)",
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum PsrSinkStatus {
+    Inactive,
+    ActiveSrcSynced,
+    ActiveRfb,
+    ActiveSinkSynced,
+    Resync,
+    InternalError,
+    Unknown(u8),
+}
+
+impl PsrSinkStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PsrSinkStatus::Inactive => "inactive",
+            PsrSinkStatus::ActiveSrcSynced => "active (source synced)",
+            PsrSinkStatus::ActiveRfb => "active (RFB)",
+            PsrSinkStatus::ActiveSinkSynced => "active (sink synced)",
+            PsrSinkStatus::Resync => "resync",
+            PsrSinkStatus::InternalError => "internal error",
+            PsrSinkStatus::Unknown(_) => "unknown",
+        }
+    }
 }
 
 fn link_rate_to_gbps(raw: u8) -> f64 {
@@ -174,6 +238,129 @@ fn parse_link_status(data: &[u8]) -> LinkStatus {
     }
 }
 
+fn parse_psr_info(aux_dev: &str) -> Option<PsrInfo> {
+    // DPCD 0x070: PSR_SUPPORT, 0x071: PSR_CAPS
+    let psr_caps = read_dpcd_bytes(aux_dev, 0x070, 2)?;
+
+    let psr_version = match psr_caps[0] {
+        0 => PsrVersion::None,
+        1 => PsrVersion::Psr1,
+        2 => PsrVersion::Psr2,
+        3 => PsrVersion::Psr2YCoord,
+        4 => PsrVersion::Psr2EarlyTransport,
+        _ => PsrVersion::None,
+    };
+
+    if psr_version == PsrVersion::None {
+        return None;
+    }
+
+    let caps_byte = psr_caps[1];
+    let no_train_on_exit = caps_byte & 0x01 != 0;
+    let setup_time_us = match (caps_byte >> 1) & 0x07 {
+        0 => 330,
+        1 => 275,
+        2 => 220,
+        3 => 165,
+        4 => 110,
+        5 => 55,
+        6 => 0,
+        _ => 330,
+    };
+    let y_coord_required = caps_byte & 0x10 != 0;
+    let su_granularity_required = caps_byte & 0x20 != 0;
+    let su_aux_frame_sync_not_needed = caps_byte & 0x40 != 0;
+
+    // PSR2 selective update granularity (0x072, 0x074)
+    let su_x_granularity = if matches!(
+        psr_version,
+        PsrVersion::Psr2 | PsrVersion::Psr2YCoord | PsrVersion::Psr2EarlyTransport
+    ) {
+        read_dpcd_bytes(aux_dev, 0x072, 1).map(|d| d[0])
+    } else {
+        None
+    };
+    let su_y_granularity = if matches!(
+        psr_version,
+        PsrVersion::Psr2 | PsrVersion::Psr2YCoord | PsrVersion::Psr2EarlyTransport
+    ) {
+        read_dpcd_bytes(aux_dev, 0x074, 1).map(|d| d[0])
+    } else {
+        None
+    };
+
+    // DPCD 0x170: PSR_EN_CFG (current enable state)
+    let psr_en = read_dpcd_bytes(aux_dev, 0x170, 1)
+        .map(|d| d[0])
+        .unwrap_or(0);
+    let psr_enabled = psr_en & 0x01 != 0;
+    let psr2_enabled = psr_en & 0x40 != 0;
+
+    // DPCD 0x2008: PSR sink status
+    let sink_status = read_dpcd_bytes(aux_dev, 0x2008, 1).map(|d| match d[0] & 0x07 {
+        0 => PsrSinkStatus::Inactive,
+        1 => PsrSinkStatus::ActiveSrcSynced,
+        2 => PsrSinkStatus::ActiveRfb,
+        3 => PsrSinkStatus::ActiveSinkSynced,
+        4 => PsrSinkStatus::Resync,
+        7 => PsrSinkStatus::InternalError,
+        v => PsrSinkStatus::Unknown(v),
+    });
+
+    // DPCD 0x2006: PSR error status
+    let mut errors = Vec::new();
+    if let Some(err) = read_dpcd_bytes(aux_dev, 0x2006, 1).map(|d| d[0]) {
+        if err & 0x01 != 0 {
+            errors.push("Link CRC error".to_string());
+        }
+        if err & 0x02 != 0 {
+            errors.push("RFB storage error".to_string());
+        }
+        if err & 0x04 != 0 {
+            errors.push("VSC SDP uncorrectable error".to_string());
+        }
+    }
+
+    Some(PsrInfo {
+        psr_version,
+        no_train_on_exit,
+        setup_time_us,
+        y_coord_required,
+        su_granularity_required,
+        su_aux_frame_sync_not_needed,
+        su_x_granularity,
+        su_y_granularity,
+        psr_enabled,
+        psr2_enabled,
+        sink_status,
+        errors,
+    })
+}
+
+fn read_psr_driver_status(connector_name: &str) -> Option<String> {
+    // Try i915 per-connector debugfs: /sys/kernel/debug/dri/<N>/<connector>/i915_psr_status
+    // The card number in debugfs doesn't always match sysfs, so try all
+    let debug_dir = Path::new("/sys/kernel/debug/dri");
+    let entries = fs::read_dir(debug_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().join(connector_name).join("i915_psr_status");
+        if let Ok(content) = fs::read_to_string(&path) {
+            return Some(content.trim().to_string());
+        }
+    }
+
+    // Try global i915_edp_psr_status
+    let entries = fs::read_dir(debug_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().join("i915_edp_psr_status");
+        if let Ok(content) = fs::read_to_string(&path) {
+            return Some(content.trim().to_string());
+        }
+    }
+
+    None
+}
+
 pub fn get_dp_info(connector_type: &str, connector_path: &Path) -> DpInfo {
     let is_dp = matches!(connector_type, "DP" | "eDP");
 
@@ -184,6 +371,8 @@ pub fn get_dp_info(connector_type: &str, connector_path: &Path) -> DpInfo {
             dpcd: None,
             link_config: None,
             link_status: None,
+            psr: None,
+            psr_driver_status: None,
         };
     }
 
@@ -210,12 +399,23 @@ pub fn get_dp_info(connector_type: &str, connector_path: &Path) -> DpInfo {
         .and_then(|dev| read_dpcd_bytes(dev, 0x0200, 8))
         .map(|data| parse_link_status(&data));
 
+    let psr = aux_dev.as_ref().and_then(|dev| parse_psr_info(dev));
+
+    // Extract connector name for debugfs lookup
+    let connector_name = connector_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let psr_driver_status = read_psr_driver_status(&connector_name);
+
     DpInfo {
         is_dp: true,
         aux_name,
         dpcd,
         link_config,
         link_status,
+        psr,
+        psr_driver_status,
     }
 }
 

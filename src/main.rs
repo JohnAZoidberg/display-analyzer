@@ -14,6 +14,10 @@ struct Cli {
     /// Launch GUI mode
     #[arg(long)]
     gui: bool,
+
+    /// Show only a specific port (e.g. card1-DP-4, card1-eDP-1)
+    #[arg(long)]
+    port: Option<String>,
 }
 
 fn main() {
@@ -22,7 +26,22 @@ fn main() {
     if cli.gui {
         run_gui();
     } else {
-        let connectors = drm_info::enumerate_connectors();
+        let mut connectors = drm_info::enumerate_connectors();
+        if let Some(port) = &cli.port {
+            connectors.retain(|c| c.name == *port);
+            if connectors.is_empty() {
+                eprintln!("No connector found matching '{port}'");
+                eprintln!(
+                    "Available: {}",
+                    drm_info::enumerate_connectors()
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                std::process::exit(1);
+            }
+        }
         cli_output::print_all(&connectors);
     }
 }

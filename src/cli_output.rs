@@ -178,35 +178,25 @@ fn print_connector_details(conn: &ConnectorInfo, dp: &DpInfo, prefix: &str) {
                 .or(dp.dpcd.as_ref().map(|d| d.max_lane_count))
                 .unwrap_or(4) as usize;
 
-            let all_ok = ls.lane_status[..lane_count]
-                .iter()
-                .all(|l| l.cr_done && l.channel_eq_done && l.symbol_locked);
-
             let has_more = dp.psr.is_some() || dp.psr_driver_status.is_some();
-            let branch = if has_more { "├" } else { "└" };
+            let last_branch = if has_more { "├" } else { "└" };
 
-            if all_ok && ls.interlane_align_done {
+            for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
                 println!(
-                    "{dp_prefix}{branch}── Link Training: OK (all {lane_count} lanes locked, aligned)"
-                );
-            } else {
-                for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
-                    println!(
-                        "{dp_prefix}├── Lane {i}: CR={} EQ={} Lock={}",
-                        if lane.cr_done { "ok" } else { "FAIL" },
-                        if lane.channel_eq_done { "ok" } else { "FAIL" },
-                        if lane.symbol_locked { "ok" } else { "FAIL" },
-                    );
-                }
-                println!(
-                    "{dp_prefix}{branch}── Interlane Align: {}",
-                    if ls.interlane_align_done {
-                        "ok"
-                    } else {
-                        "FAIL"
-                    }
+                    "{dp_prefix}├── Lane {i}: CR={} EQ={} Lock={}",
+                    if lane.cr_done { "ok" } else { "FAIL" },
+                    if lane.channel_eq_done { "ok" } else { "FAIL" },
+                    if lane.symbol_locked { "ok" } else { "FAIL" },
                 );
             }
+            println!(
+                "{dp_prefix}{last_branch}── Interlane Align: {}",
+                if ls.interlane_align_done {
+                    "ok"
+                } else {
+                    "FAIL"
+                }
+            );
         }
 
         // PSR info

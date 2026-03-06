@@ -217,30 +217,24 @@ fn draw_connector_details(ui: &mut egui::Ui, conn: &ConnectorInfo, dp: &DpInfo) 
                         .or(dp.dpcd.as_ref().map(|d| d.max_lane_count))
                         .unwrap_or(4) as usize;
 
-                    let all_ok = ls.lane_status[..lane_count]
-                        .iter()
-                        .all(|l| l.cr_done && l.channel_eq_done && l.symbol_locked);
+                    for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
+                        ui.label(format!("Lane {i}:"));
+                        ui.label(format!(
+                            "CR={} EQ={} Lock={}",
+                            if lane.cr_done { "ok" } else { "FAIL" },
+                            if lane.channel_eq_done { "ok" } else { "FAIL" },
+                            if lane.symbol_locked { "ok" } else { "FAIL" },
+                        ));
+                        ui.end_row();
+                    }
 
-                    ui.label("Link Training:");
-                    if all_ok && ls.interlane_align_done {
-                        ui.label(format!("OK (all {lane_count} lanes locked, aligned)"));
+                    ui.label("Interlane Align:");
+                    ui.label(if ls.interlane_align_done {
+                        "ok"
                     } else {
-                        ui.label("ISSUES (see details)");
-                    }
+                        "FAIL"
+                    });
                     ui.end_row();
-
-                    if !(all_ok && ls.interlane_align_done) {
-                        for (i, lane) in ls.lane_status[..lane_count].iter().enumerate() {
-                            ui.label(format!("  Lane {i}:"));
-                            ui.label(format!(
-                                "CR={} EQ={} Lock={}",
-                                if lane.cr_done { "ok" } else { "FAIL" },
-                                if lane.channel_eq_done { "ok" } else { "FAIL" },
-                                if lane.symbol_locked { "ok" } else { "FAIL" },
-                            ));
-                            ui.end_row();
-                        }
-                    }
                 }
 
                 if dp.dpcd.is_none() {
